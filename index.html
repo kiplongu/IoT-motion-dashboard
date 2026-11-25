@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Group 4 — Motion Alarm</title>
+
+  <style>
+    /* Set the page colours, font and spacing */
+    body {
+      font-family: Arial, sans-serif;
+      background: #f1f5f9;
+      color: #172033;
+      max-width: 850px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+
+    /* White panels for status information and history */
+    .card {
+      background: white;
+      padding: 24px;
+      border-radius: 12px;
+      margin-bottom: 20px;
+      border: 1px solid #dbe2ea;
+    }
+
+    /* Neutral colour until we receive sensor data */
+    #motion-status {
+      background: #e2e8f0;
+      padding: 18px;
+      border-radius: 8px;
+      font-size: 24px;
+      font-weight: bold;
+    }
+
+    /* Format the event history table */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 12px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+
+    .note {
+      color: #526174;
+      font-size: 14px;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Motion Detection Alarm</h1>
+  <p>CSC 823 · Group 4 · Wokwi prototype</p>
+
+  <!-- Connection information will be updated by JavaScript -->
+  <section class="card">
+    <h2>Connection</h2>
+    <p>Dashboard connection to broker:
+      <strong id="connection-status">Not connected</strong>
+    </p>
+    <p>Topic: <code>ouk/group4/lab-7c92/motion</code></p>
+  </section>
+
+  <!-- Do not assume "No motion" before receiving a message -->
+  <section class="card">
+    <h2>Last Reported Motion Status</h2>
+    <p id="motion-status">Waiting for data</p>
+    <p>Last message received:
+      <span id="last-update">None yet</span>
+    </p>
+    <p class="note">
+      A broker connection alone does not confirm the ESP32 is online.
+    </p>
+  </section>
+
+  <!-- Received events will eventually appear here -->
+  <section class="card">
+    <h2>Event History</h2>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Time received</th>
+          <th scope="col">Message</th>
+        </tr>
+      </thead>
+      <tbody id="event-history">
+        <tr>
+          <td colspan="2">No events received yet.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- Load the MQTT library into the browser -->
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+<script>
+  // Use the same topic as our ESP32 firmware
+  const motionTopic = "ouk/group4/lab-7c92/motion";
+
+  // Find the elements we want to update on the page
+  const connectionStatus = document.getElementById("connection-status");
+  const motionStatus = document.getElementById("motion-status");
+  const lastUpdate = document.getElementById("last-update");
+
+  connectionStatus.textContent = "Connecting...";
+
+  // Browsers connect using secure WebSockets
+  const client = mqtt.connect("wss://test.mosquitto.org:8081/mqtt", {
+    // Give this dashboard its own client ID
+    clientId: "ouk-dashboard-" + Math.random().toString(16).slice(2),
+
+    // Retry every three seconds if the connection drops
+    reconnectPeriod: 3000,
+
+    // Allow ten seconds for each connection attempt
+    connectTimeout: 10000
+  });
+
+  // Subscribe when the dashboard connects to the broker
+  client.on("connect", function () {
+    connectionStatus.textContent = "Connected — subscribing...";
+
+    client.subscribe(motionTopic, { qos: 0 }, function (error, granted) {
+      if (error || !granted || granted.some(item => item.qos === 128)) {
+        connectionStatus.textContent = "Subscription failed";
+        return;
+      }
+
+      connectionStatus.textContent = "Connected and subscribed";
+    });
+  });
+
+  // Update the page whenever a motion message arrives
+  client.on("message", function (topic, payload) {
+    if (topic !== motionTopic) return;
+
+    const message = payload.toString();
+
+    // Accept only the two messages our ESP32 sends
+    if (message !== "Motion detected" && message !== "No motion") return;
+
+    motionStatus.textContent = message;
+
+    // Red means motion; green means the last report was no motion
+    motionStatus.style.background =
+      message === "Motion detected" ? "#fee2e2" : "#dcfce7";
+
+    motionStatus.style.color =
+      message === "Motion detected" ? "#991b1b" : "#166534";
+
+    // This is the time the browser received the message
+    lastUpdate.textContent = new Date().toLocaleString();
+
+    // Find the event history table
+    const historyTable = document.getElementById("event-history");
+
+    // Remove the initial "No events received yet" placeholder
+    if (historyTable.querySelector("td[colspan]")) {
+    historyTable.innerHTML = "";
+    }
+
+    // Create a row containing the reception time and message
+    const row = document.createElement("tr");
+
+    const timeCell = document.createElement("td");
+    timeCell.textContent = lastUpdate.textContent;
+
+    const messageCell = document.createElement("td");
+    messageCell.textContent = message;
+
+    // Add the cells to the row
+    row.appendChild(timeCell);
+    row.appendChild(messageCell);
+
+    // Show the newest event at the top
+    historyTable.prepend(row);
+
+    // Keep the latest 100 events to limit table growth
+    while (historyTable.rows.length > 100) {
+    historyTable.deleteRow(historyTable.rows.length - 1);
+    }
+  });
+
+  // Show changes in the dashboard's broker connection
+  client.on("reconnect", function () {
+    connectionStatus.textContent = "Reconnecting...";
+  });
+
+  client.on("close", function () {
+    connectionStatus.textContent = "Disconnected";
+  });
+
+  client.on("error", function (error) {
+    connectionStatus.textContent = "Connection error";
+    console.error("MQTT error:", error);
+  });
+</script>
+
+<script>
+  // A unique name for our saved dashboard history
+  const storageKey = "ouk-group4-motion-history";
+  const savedHistoryTable = document.getElementById("event-history");
+
+  // Restore previously saved events when the page opens
+  try {
+    const savedEvents = JSON.parse(
+      localStorage.getItem(storageKey) || "[]"
+    );
+
+    // Check that the stored data contains valid event records
+    if (Array.isArray(savedEvents)) {
+      const validEvents = savedEvents.filter(event =>
+        event &&
+        typeof event.time === "string" &&
+        ["Motion detected", "No motion"].includes(event.message)
+      ).slice(0, 100);
+
+      if (validEvents.length > 0) {
+        savedHistoryTable.innerHTML = "";
+
+        validEvents.forEach(event => {
+          const row = document.createElement("tr");
+
+          const timeCell = document.createElement("td");
+          timeCell.textContent = event.time;
+
+          const messageCell = document.createElement("td");
+          messageCell.textContent = event.message;
+
+          row.appendChild(timeCell);
+          row.appendChild(messageCell);
+          savedHistoryTable.appendChild(row);
+        });
+      }
+    }
+  } catch (error) {
+    console.warn("Could not restore saved history:", error);
+  }
+
+  // This runs after our earlier listener has updated the table
+  client.on("message", function (topic, payload) {
+    const message = payload.toString();
+
+    if (topic !== motionTopic) return;
+    if (!["Motion detected", "No motion"].includes(message)) return;
+
+    // Convert the table rows into records we can save
+    const events = Array.from(savedHistoryTable.rows).map(row => ({
+      time: row.cells[0].textContent,
+      message: row.cells[1].textContent
+    }));
+
+    try {
+      // Store the records as JSON text in this browser
+      localStorage.setItem(storageKey, JSON.stringify(events));
+    } catch (error) {
+      console.warn("Could not save history:", error);
+    }
+  });
+</script>
+</body>
+</html>
